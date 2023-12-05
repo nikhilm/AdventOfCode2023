@@ -11,6 +11,22 @@
   (for/and ([set (in-list (game-sets game))])
     (possible-set? set)))
 
+(define (fewest g)
+  (for/fold ([minimums (hash)])
+            ([set (in-list (game-sets g))])
+    (for/fold ([min-for-color minimums])
+              ([(color value) (in-hash set)])
+      (hash-update min-for-color
+                   color
+                   (lambda (min-so-far)
+                     (max min-so-far value))
+                   (lambda ()
+                     value)))))
+
+(define (power g)
+  (for/product ([fewest-for-color (in-hash-values (fewest g))])
+    fewest-for-color))
+
 (define (read-syntax path port)
   (define games
     (for/list ([line (in-lines port)]
@@ -25,23 +41,24 @@
             (define set-match (regexp-match #rx"([0-9]+) (red|green|blue)" reveal))
             (values (third set-match) (string->number (second set-match))))))
       (game game-id sets)))
-  (printf "part 1 ~v~n"
-          (for/sum ([g (in-list games)])
-            (printf "game ~a, possible? ~a~n" (game-id g) (possible? g))
-            (if (possible? g)
-                (game-id g)
-                0)))
-  #;(define src-datums (format-datums '~s src-lines))
+  ; This isn't the best because it isn't preserving any syntax/datum information from the parse.
   (define module-datum `(module day1-mod "lang.rkt"
-                          (handle-args)))
+                          (handle-args ,@games)))
   (datum->syntax #f module-datum))
 (provide read-syntax)
 
 (define-macro (day1-module-begin HANDLE-ARGS-EXPR)
   #'(#%module-begin
-     (display HANDLE-ARGS-EXPR)))
+     HANDLE-ARGS-EXPR))
 (provide (rename-out [day1-module-begin #%module-begin]))
 
-(define (handle-args . args)
-  void)
+(define (handle-args . games)
+  (printf "part 1 ~v~n"
+          (for/sum ([g (in-list games)])
+            (if (possible? g)
+                (game-id g)
+                0)))
+  (printf "part 2 ~v~n"
+          (for/sum ([g (in-list games)])
+            (power g))))
 (provide handle-args)
