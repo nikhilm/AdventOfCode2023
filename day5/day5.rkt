@@ -1,20 +1,17 @@
 #lang racket
 (require advent-of-code)
-(require data/interval-map)
 
 ; use a hash for each map, but hash-ref should return the key itself when the value is missing.
 ; maintain a list of interval-maps, one from each map to the next.
 ; this should be enough for part 1
 ; seeds are not a map, just a list
-(struct almanac (seeds maps) #:transparent)
+(struct almanac (seeds maps) #:prefab)
 
-; if we use data/interval-map, the keys can be the source ranges
-; however we need to associate the destination with a range, and then translate from the offset
-; i.e. dst src len
-; then looking up src+i where i < len should eventually result in dst+i
-; if interval-map-ref/bounds is used. this may work
+; we will need our own interval-map replacement that is much faster.
+; for whatever reason, interval map is slow.
+; end exclusive
+(struct range (start end dest) #:prefab)
 
-; need a better structure than a direct per-key hash map since the numbers are so big.
 
 (define (read-seeds)
   (define line (read-line))
@@ -35,15 +32,14 @@
   (read-line)
   ; read map name which we don't care about
   (read-line)
-  (let loop ([map (make-interval-map)])
-    (define range (read-range))
-    (if range
+  (let loop ([map null])
+    (define r (read-range))
+    (if r
         (begin
           #;(printf "Range is ~v~n" range)
-          ; convert range to hash entries
-          (match-let ([(list dst-start src-start len) range])
-            (interval-map-set! map src-start (+ src-start len) dst-start)
-            (loop map)))
+          ; convert range to entries
+          (match-let ([(list dst-start src-start len) r])
+            (loop (cons (range src-start (+ src-start len) dst-start) map))))
         map)))
 
 (define (read-map)
@@ -62,6 +58,17 @@
            (loop (cons m maps))
            (reverse maps))))))
 
+(define (lookup alm-map key)
+  (let loop ([l alm-map])
+    (if (empty? l)
+        (values #f #f key)
+        (let ([r (first l)])
+          #;(printf "Range is ~v~n, key is ~v" r key)
+          (if (and (>= key (range-start r))
+                   (< key (range-end r)))
+              (values (range-start r) (range-end r) (range-dest r))
+              (loop (rest l)))))))
+
 (define (min-location almanac)
   (for/fold ([min-loc +inf.0]
              #:result (exact-truncate min-loc))
@@ -71,66 +78,71 @@
          ; translate from seed to location by going throught the maps
          (for/fold ([item seed])
                    ([map (in-list (almanac-maps almanac))])
-           (define-values (start end-ex val) (interval-map-ref/bounds map item item))
+           (define-values (start end-ex val) (lookup map item))
            #;(printf "  Lookup of ~v resulted in ~v~n" item (list start end-ex val))
            (if start
                (+ val (- item start))
                val)))))
 
-(define (min-location-2 almanac)
-  ; convert seeds to another map
-  (define seed-map (make-interval-map))
-  (let loop ([l (almanac-seeds almanac)])
-    (if (empty? l)
-        void
-        (begin
-          (interval-map-set! seed-map (first l) (+ (first l) (second l)) #t)
-          (loop (drop l 2)))))
-
-  (printf "Seed map is ~v~n" seed-map)
-
-  ; I give up. lets try using Places
-  #|
-  (define seed-to-soil-map (first (almanac-maps almanac)))
-  (for ([seed-to-soil-range (in-dict-keys seed-to-soil-map)])
-    (printf "Seed-to-soil ~v~n" seed-to-soil-range)
-    (match-define (cons map-start map-end) seed-to-soil-range)
-    (let ([start-contained? (interval-map-ref seed-map map-start #f)]
-          [end-contained? (interval-map-ref seed-map map-end #f)])
-      (when start-contained?
-        (interval-map-expand! seed-map map-start (add1 map-start)))
-      (when end-contained?
-        (interval-map-expand! seed-map map-end (add1 map-end)))))
-  (printf "After expansion, seed map is ~v~n" seed-map)
-  |#
-  ; ok, generally proceed as before, except the seed iterator should treat seeds to check as the bounds of all the seed-map keys
-  (for*/fold ([min-loc +inf.0]
-              #:result (exact-truncate min-loc))
-             ([seed-range (in-dict-keys seed-map)]
-              [seed (in-range (car seed-range) (cdr seed-range))]
-              #;[seed (in-list (list (car seed-range) (sub1 (cdr seed-range))))])
-    (printf "Seed ~v~n" seed)
+(define (min-location-seed-range almanac seed-range)
+  (printf "Running on range ~v, ~v items~n" seed-range (- (range-end seed-range) (range-start seed-range)))
+  
+  (time (for/fold ([min-loc +inf.0]
+             #:result (exact-truncate min-loc))
+            ([seed (in-range (range-start seed-range) (range-end seed-range))])
+    #;(printf "Seed ~v~n" seed)
     (min min-loc
          ; translate from seed to location by going throught the maps
          (for/fold ([item seed])
                    ([map (in-list (almanac-maps almanac))])
-           (define-values (start end-ex val) (interval-map-ref/bounds map item item))
-           (printf "  Lookup of ~v resulted in ~v -> ~v~n" item (list start end-ex val) (if start
-               (+ val (- item start))
-               val))
+           (define-values (start end-ex val) (lookup map item))
+           #;(printf "  Lookup of ~v resulted in ~v~n" item (list start end-ex val))
            (if start
                (+ val (- item start))
-               val)))))
+               val))))))
+
+(define (run-lookup-in-place almanac seed-range)
+  (define p
+    (place ch
+           (match-define (list alm range) (place-channel-get ch))
+           (printf "Place got ~v~n" range)
+           (place-channel-put ch (min-location-seed-range alm range))))
+  (place-channel-put p (list almanac seed-range))
+  p)
+
+(define (min-location-2 almanac)
+  ; convert seeds to another map
+  (define seed-map 
+    (let loop ([l (almanac-seeds almanac)]
+               [sm null])
+      (if (empty? l)
+          sm
+          (loop (drop l 2) (cons (range (first l) (+ (first l) (second l)) #t) sm)))))
+
+  (printf "Seed map is ~v~n" seed-map)
+  (define channels (for/list ([seed-range (in-list seed-map)])
+                     (run-lookup-in-place almanac seed-range)))
+  ; [seed-range (in-dict-keys seed-map)]
+  ; ok, generally proceed as before, except the seed iterator should treat seeds to check as the bounds of all the seed-map keys
+  ; get answers from all places, and take their minimum
+  (argmin identity (map place-channel-get channels))
+  #;
+  (for/fold ([min-loc +inf.0]
+             #:result (exact-truncate min-loc))
+            ([seed-range (in-list seed-map)])
+    (min min-loc
+         (min-location-seed-range almanac seed-range))))
 
 (define (run)
   (define almanac (read-almanac))
-  #;(printf "Almanac ~a~n" almanac)
+  (printf "Almanac ~a~n" almanac)
   (values (min-location almanac) (min-location-2 almanac)))
 
 (module+ main
-  #;(parameterize ([current-input-port (open-aoc-input (find-session) 2023 5 #:cache #t)])
+  (parameterize ([current-input-port (open-aoc-input (find-session) 2023 5 #:cache #t)])
       (define-values (p1 p2) (run))
-      (printf "Part 1: ~v~n" p1)))
+      (printf "Part 1: ~v~n" p1)
+      (printf "Part 2: ~v~n" p2)))
 
 (module+ test
   (require rackunit)
