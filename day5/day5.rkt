@@ -65,13 +65,59 @@
 (define (min-location almanac)
   (for/fold ([min-loc +inf.0]
              #:result (exact-truncate min-loc))
-            ([seed (in-list (almanac-seeds almanac))])  
+            ([seed (in-list (almanac-seeds almanac))])
+    #;(printf "Seed ~v~n" seed)
     (min min-loc
          ; translate from seed to location by going throught the maps
          (for/fold ([item seed])
                    ([map (in-list (almanac-maps almanac))])
            (define-values (start end-ex val) (interval-map-ref/bounds map item item))
-           #;(printf "Lookup of ~v resulted in ~v~n" item (list start end-ex val))
+           #;(printf "  Lookup of ~v resulted in ~v~n" item (list start end-ex val))
+           (if start
+               (+ val (- item start))
+               val)))))
+
+(define (min-location-2 almanac)
+  ; convert seeds to another map
+  (define seed-map (make-interval-map))
+  (let loop ([l (almanac-seeds almanac)])
+    (if (empty? l)
+        void
+        (begin
+          (interval-map-set! seed-map (first l) (+ (first l) (second l)) #t)
+          (loop (drop l 2)))))
+
+  (printf "Seed map is ~v~n" seed-map)
+
+  ; I give up. lets try using Places
+  #|
+  (define seed-to-soil-map (first (almanac-maps almanac)))
+  (for ([seed-to-soil-range (in-dict-keys seed-to-soil-map)])
+    (printf "Seed-to-soil ~v~n" seed-to-soil-range)
+    (match-define (cons map-start map-end) seed-to-soil-range)
+    (let ([start-contained? (interval-map-ref seed-map map-start #f)]
+          [end-contained? (interval-map-ref seed-map map-end #f)])
+      (when start-contained?
+        (interval-map-expand! seed-map map-start (add1 map-start)))
+      (when end-contained?
+        (interval-map-expand! seed-map map-end (add1 map-end)))))
+  (printf "After expansion, seed map is ~v~n" seed-map)
+  |#
+  ; ok, generally proceed as before, except the seed iterator should treat seeds to check as the bounds of all the seed-map keys
+  (for*/fold ([min-loc +inf.0]
+              #:result (exact-truncate min-loc))
+             ([seed-range (in-dict-keys seed-map)]
+              [seed (in-range (car seed-range) (cdr seed-range))]
+              #;[seed (in-list (list (car seed-range) (sub1 (cdr seed-range))))])
+    (printf "Seed ~v~n" seed)
+    (min min-loc
+         ; translate from seed to location by going throught the maps
+         (for/fold ([item seed])
+                   ([map (in-list (almanac-maps almanac))])
+           (define-values (start end-ex val) (interval-map-ref/bounds map item item))
+           (printf "  Lookup of ~v resulted in ~v -> ~v~n" item (list start end-ex val) (if start
+               (+ val (- item start))
+               val))
            (if start
                (+ val (- item start))
                val)))))
@@ -79,12 +125,12 @@
 (define (run)
   (define almanac (read-almanac))
   #;(printf "Almanac ~a~n" almanac)
-  (values (min-location almanac) +nan.0))
+  (values (min-location almanac) (min-location-2 almanac)))
 
 (module+ main
-  (parameterize ([current-input-port (open-aoc-input (find-session) 2023 5 #:cache #t)])
-    (define-values (p1 p2) (run))
-    (printf "Part 1: ~v~n" p1)))
+  #;(parameterize ([current-input-port (open-aoc-input (find-session) 2023 5 #:cache #t)])
+      (define-values (p1 p2) (run))
+      (printf "Part 1: ~v~n" p1)))
 
 (module+ test
   (require rackunit)
@@ -122,4 +168,5 @@ temperature-to-humidity map:
 humidity-to-location map:
 60 56 37
 56 93 4" run))
-  (check-equal? p1 35))
+  (check-equal? p1 35)
+  (check-equal? p2 46))
